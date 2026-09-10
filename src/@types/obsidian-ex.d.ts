@@ -18,6 +18,7 @@ declare module 'obsidian' {
   }
 
   interface Vault {
-    getConfig(id: string): boolean;
+    getConfig(id: 'tabSize'): number | undefined;
+    getConfig(id: 'useTab'): boolean | undefined;
   }
 }

@@ -1,8 +1,7 @@
-import DiffMatchPatch from 'diff-match-patch';
-import { EditorPosition, Plugin } from 'obsidian';
+import { Plugin } from 'obsidian';
 
-import * as markdownPlugin from 'prettier/plugins/markdown';
-import * as prettier from 'prettier/standalone';
+import { formatChanges } from './editor-changes.js';
+import { formatMarkdown } from './format-markdown.js';
 
 import PrettierSettingTab from './prettier-setting-tab.js';
 
@@ -18,14 +17,6 @@ const DEFAULT_SETTINGS: PrettierPluginSettings = {
   useTabs: true,
 };
 
-const getPosition = (text: string): EditorPosition => {
-  const lines = text.split('\n');
-  return {
-    ch: lines.at(-1)?.length ?? 0,
-    line: lines.length - 1,
-  };
-};
-
 export default class PrettierPlugin extends Plugin {
   settings: PrettierPluginSettings;
   originalCheckCallback?: (checking: boolean) => boolean | void;
@@ -38,59 +29,23 @@ export default class PrettierPlugin extends Plugin {
     }
 
     const file = this.app.workspace.getActiveFile();
+    const path = file?.path;
     const text = editor.getValue();
     if (text && file) {
-      const formattedText = await prettier.format(text, {
-        embeddedLanguageFormatting: 'auto',
-        filepath: file.path,
-        parser: 'markdown',
-        plugins: [markdownPlugin],
-        tabWidth: this.settings.tabWidth,
-        useTabs: this.settings.useTabs,
+      const formattedText = await formatMarkdown(text, {
+        tabWidth:
+          this.app.vault.getConfig('tabSize') ?? DEFAULT_SETTINGS.tabWidth,
+        useTabs: this.app.vault.getConfig('useTab') ?? DEFAULT_SETTINGS.useTabs,
       });
-
-      // Switched to using DiffMatchPatch after I saw it here:
-      // https://github.com/platers/obsidian-linter
-      // And this style of updating the editor stops my cursor from jumping
-      // around. Also, it keeps sections toggled if I've closed them.
-
-      // eslint-disable-next-line new-cap
-      const dmp = new DiffMatchPatch.diff_match_patch();
-      const changes = dmp.diff_main(text, formattedText);
-
-      let currentText = '';
-      for (const change of changes) {
-        const [type, value] = change;
-
-        if (type === DiffMatchPatch.DIFF_INSERT) {
-          editor.cm.dispatch({
-            changes: [
-              {
-                from: editor.posToOffset(getPosition(currentText)),
-                insert: value,
-              },
-            ],
-            filter: false,
-          });
-          currentText += value;
-        } else if (type === DiffMatchPatch.DIFF_DELETE) {
-          const start = getPosition(currentText);
-          const end = getPosition(currentText + value);
-
-          editor.cm.dispatch({
-            changes: [
-              {
-                from: editor.posToOffset(start),
-                insert: '',
-                to: editor.posToOffset(end),
-              },
-            ],
-            filter: false,
-          });
-        } else {
-          currentText += value;
-        }
-      }
+      if (
+        this.app.workspace.activeEditor?.editor !== editor ||
+        this.app.workspace.getActiveFile() !== file ||
+        file.path !== path ||
+        editor.getValue() !== text
+      )
+        return;
+      const changes = formatChanges(text, formattedText);
+      if (changes.length > 0) editor.cm.dispatch({ changes, filter: false });
     }
   }
 
@@ -177,9 +132,10 @@ export default class PrettierPlugin extends Plugin {
   async loadSettings() {
     this.settings = {
       ...DEFAULT_SETTINGS,
-      tabWidth: this.app.vault.getConfig('tabSize'),
-      useTabs: this.app.vault.getConfig('useTab'),
       ...(await this.loadData()),
+      tabWidth:
+        this.app.vault.getConfig('tabSize') ?? DEFAULT_SETTINGS.tabWidth,
+      useTabs: this.app.vault.getConfig('useTab') ?? DEFAULT_SETTINGS.useTabs,
     };
   }
 
