@@ -15,18 +15,6 @@ export default class PrettierSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
-    new Setting(containerEl)
-      .setName('Format on save')
-      .setDesc('Format file automatically when you save')
-      .addToggle((component) =>
-        component
-          .setValue(this.plugin.settings.formatOnSave)
-          .onChange(
-            async (value) => (this.plugin.settings.formatOnSave = value),
-          ),
-      );
-
-    containerEl.createEl('hr', { cls: 'prettier-plugin-hr' });
     containerEl.createEl('div', {
       cls: 'prettier-plugin-settings-description',
       text: 'These are the settings currently set in the "Editor" tab, please edit them there if you would like to change them.',

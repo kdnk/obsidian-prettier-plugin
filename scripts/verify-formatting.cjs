@@ -29,7 +29,7 @@ try {
     // replacing save hooks; only its unused UI base classes are stubbed.
     const plugin = Object.create(module.exports.default.prototype);
     plugin.app = app;
-    plugin.settings = { tabWidth: 4, useTabs: true, formatOnSave: false };
+    plugin.settings = { tabWidth: 4, useTabs: true };
     const file = await app.vault.create(note, before);
     const leaf = app.workspace.getLeaf('tab');
     window.__prettierCheck = { plugin, leaf };

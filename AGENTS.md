@@ -1,0 +1,3 @@
+- Formatting
+    - Keep save-time orchestration in the calling plugin. This plugin provides manual formatting and an awaitable `format()` method, without its own save hook or format-on-save option.
+    - Preserve the completion Promise returned by `format()` so integrations can finish Prettier formatting before running the next formatter.

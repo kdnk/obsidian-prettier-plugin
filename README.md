@@ -16,9 +16,9 @@ _Or_ unzip the [latest release](https://github.com/dylanarmstrong/obsidian-prett
 
 # Usage
 
-Format on save is enabled by default, and can be changed under plugin settings.
+Run the "Format current file" command to format manually. Automatic formatting is managed by the calling plugin, such as Automatic Linker, which can await this plugin's `format()` method.
 
-Additionally, a "Format current file" command is available.
+This plugin has no format-on-save option or save hook. Its settings tab only displays the indentation settings from Obsidian's Editor tab.
 
 # Customization
 
@@ -28,9 +28,9 @@ Prettier itself prints Markdown lists with spaces even with `useTabs: true`; thi
 
 Only structural list indentation is normalized. Marker separators and alignment spaces remain where Markdown needs them; code-content spaces and tabs are preserved. Quoted lists are left to Prettier. Indented runs recognized as code are not guessed to be malformed lists. Blocks containing multiline inline code, links, images or reference definitions are kept out of Prettier's formatting pass to avoid upstream preservation issues. Embedded code formatting is disabled.
 
-One save applies one atomic diff and does nothing when the result is unchanged. Formatting is discarded if the text or active file/editor changes while it is running. Obsidian's current `useTab` and `tabSize` settings take precedence over legacy saved plugin values.
+One formatting operation applies one atomic diff and does nothing when the result is unchanged. Formatting is discarded if the text or active file/editor changes while it is running. Indentation is read from Obsidian's current `useTab` and `tabSize` settings; legacy saved plugin options are ignored.
 
-When Automatic Linker coordinates saving, turn off this plugin's **Format on save** and Linter's **Lint on save**; enable Automatic Linker's Prettier and Linter stages. The order remains links → Prettier → Linter. Install this fork before using an Automatic Linker version that removes its old indentation-cleanup option. Linter rules can still change the formatter's output; avoid conflicting indentation rules.
+When Automatic Linker coordinates saving, turn off Linter's **Lint on save** and enable Automatic Linker's Prettier and Linter stages. The order remains links → Prettier → Linter. Install this fork before using an Automatic Linker version that removes its old indentation-cleanup option. Linter rules can still change the formatter's output; avoid conflicting indentation rules.
 
 # Development checks
 
