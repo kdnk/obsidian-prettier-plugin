@@ -7,5 +7,5 @@
   "isDesktopOnly": false,
   "minAppVersion": "0.15.0",
   "name": "Format Automatically with Prettier",
-  "version": "2.0.0"
+  "version": "2.0.1"
 }
