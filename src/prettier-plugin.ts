@@ -2,6 +2,7 @@ import { Plugin } from 'obsidian';
 
 import { formatChanges } from './editor-changes.js';
 import { formatMarkdown } from './format-markdown.js';
+import { formattingScrollSnapshot } from './formatting-scroll.js';
 
 import PrettierSettingTab from './prettier-setting-tab.js';
 
@@ -23,25 +24,37 @@ export default class PrettierPlugin extends Plugin {
     if (!editor || !editor.cm) {
       return;
     }
+    const view = editor.cm;
 
     const file = this.app.workspace.getActiveFile();
     const path = file?.path;
     const text = editor.getValue();
     if (text && file) {
+      const isCurrent = () =>
+        this.app.workspace.activeEditor?.editor === editor &&
+        editor.cm === view &&
+        this.app.workspace.getActiveFile() === file &&
+        file.path === path &&
+        editor.getValue() === text;
       const formattedText = await formatMarkdown(text, {
         tabWidth:
           this.app.vault.getConfig('tabSize') ?? DEFAULT_SETTINGS.tabWidth,
         useTabs: this.app.vault.getConfig('useTab') ?? DEFAULT_SETTINGS.useTabs,
       });
-      if (
-        this.app.workspace.activeEditor?.editor !== editor ||
-        this.app.workspace.getActiveFile() !== file ||
-        file.path !== path ||
-        editor.getValue() !== text
-      )
-        return;
+      if (!isCurrent()) return;
       const changes = formatChanges(text, formattedText);
-      if (changes.length > 0) editor.cm.dispatch({ changes, filter: false });
+      if (changes.length > 0) {
+        const snapshot = formattingScrollSnapshot(view);
+        // Layout measurement can synchronously run other editor callbacks.
+        if (!isCurrent()) return;
+        const changeSet = view.state.changes(changes);
+        view.dispatch({
+          changes: changeSet,
+          // Effects refer to the document after its changes.
+          effects: snapshot?.map(changeSet),
+          filter: false,
+        });
+      }
     }
   }
 

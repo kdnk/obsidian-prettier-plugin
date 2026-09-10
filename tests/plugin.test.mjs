@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSync } from 'esbuild';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { EditorSelection, EditorState } = require('@codemirror/state');
+const { EditorView } = require('@codemirror/view');
 
 const source = buildSync({
   entryPoints: ['src/prettier-plugin.ts'],
@@ -8,13 +13,14 @@ const source = buildSync({
   write: false,
   format: 'cjs',
   platform: 'node',
-  external: ['obsidian'],
+  external: ['obsidian', '@codemirror/state'],
 }).outputFiles[0].text;
 const module = { exports: {} };
 new Function('module', 'exports', 'require', source)(
   module,
   module.exports,
   (name) => {
+    if (name === '@codemirror/state') return require(name);
     assert.equal(name, 'obsidian');
     return {
       Plugin: class {
@@ -33,6 +39,7 @@ function setup() {
   plugin.loadData = async () => ({ formatOnSave: true });
   let text = '- root\n        - child';
   const transactions = [];
+  const snapshots = [];
   const editor = {
     getValue: () => text,
     posToOffset: ({ line, ch }) =>
@@ -41,13 +48,24 @@ function setup() {
         .slice(0, line)
         .reduce((offset, value) => offset + value.length + 1, 0) + ch,
     cm: {
+      state: EditorState.create({ doc: text }),
+      scrollDOM: {
+        scrollTop: 900,
+        scrollLeft: 17,
+        getBoundingClientRect: () => ({ top: 80 }),
+      },
+      dom: { ownerDocument: { defaultView: { devicePixelRatio: 1 } } },
+      documentTop: -800,
+      lineBlockAtHeight: () => ({ from: 0, top: 0 }),
+      viewState: { scrollAnchorAt: () => ({ from: 0, top: 0 }) },
+      scrollSnapshot() {
+        snapshots.push({ text, scrollTop: this.scrollDOM.scrollTop });
+        return EditorView.prototype.scrollSnapshot.call(this);
+      },
       dispatch(transaction) {
         transactions.push(transaction);
-        for (const change of [...transaction.changes].reverse())
-          text =
-            text.slice(0, change.from) +
-            (change.insert ?? '') +
-            text.slice(change.to ?? change.from);
+        this.state = this.state.update(transaction).state;
+        text = this.state.doc.toString();
       },
     },
   };
@@ -62,26 +80,151 @@ function setup() {
     editor,
     file,
     transactions,
+    snapshots,
     commands,
     changeText: (value) => {
       text = value;
+      editor.cm.state = EditorState.create({ doc: text });
     },
   };
 }
 
 test('format uses repaired tabs and one atomic editor transaction', async () => {
-  const { plugin, editor, transactions } = setup();
+  const { plugin, editor, transactions, snapshots } = setup();
   await plugin.format();
   assert.equal(editor.getValue(), '- root\n\t- child\n');
   assert.equal(transactions.length, 1);
   assert.equal(transactions[0].filter, false);
+  assert.equal(snapshots.length, 1);
   await plugin.format();
   assert.equal(
     transactions.length,
     1,
     'unchanged formatting does not dispatch',
   );
+  assert.equal(
+    snapshots.length,
+    1,
+    'unchanged formatting does not capture scroll',
+  );
 });
+
+// DOM geometry is supplied here; effect creation and change/selection mapping
+// use real CodeMirror. Live Obsidian tests cover widget layout and rendering.
+for (const propertiesHeight of [0, 673]) {
+  for (const widgetHeight of [44, 900]) {
+    for (const cursor of ['above', 'below']) {
+      test(`format preserves the visible block with properties ${propertiesHeight}, widget ${widgetHeight}, cursor ${cursor}`, async () => {
+        const { plugin, editor, transactions, changeText } = setup();
+        const text =
+          '- root\n        - child\n\nvisible paragraph\n\nlast paragraph';
+        changeText(text);
+        const view = editor.cm;
+        const visibleFrom = text.indexOf('visible');
+        const cursorFrom = cursor === 'above' ? 0 : text.length;
+        view.state = view.state.update({
+          selection: EditorSelection.cursor(cursorFrom),
+        }).state;
+        const before = view.state;
+        const blockTop = widgetHeight + 100;
+        const scrollTop = propertiesHeight + blockTop + 12;
+        view.scrollDOM.scrollTop = scrollTop;
+        view.documentTop = 80 + propertiesHeight - scrollTop;
+        view.lineBlockAtHeight = (height) => {
+          if (height === 0) return { from: 0, top: 0 };
+          assert.ok(height >= blockTop && height < blockTop + 30);
+          return { from: visibleFrom, top: blockTop };
+        };
+        // Native snapshots choose a different anchor when properties offset
+        // cm-content. A corrected snapshot must refer to the visible paragraph.
+        view.viewState.scrollAnchorAt = () => ({
+          from: text.length,
+          top: blockTop + 300,
+        });
+
+        await plugin.format();
+
+        const spec = transactions[0];
+        assert.ok(spec.effects, 'formatting must carry a scroll snapshot');
+        const effects = Array.isArray(spec.effects)
+          ? spec.effects
+          : [spec.effects];
+        const snapshot = effects[0].value;
+        const changes = before.changes(spec.changes);
+        assert.equal(snapshot.range.head, changes.mapPos(visibleFrom));
+        assert.equal(
+          snapshot.isSnapshot,
+          true,
+          'preserve the view without revealing the cursor',
+        );
+        assert.equal(snapshot.yMargin, blockTop - scrollTop);
+        assert.equal(snapshot.xMargin, 17);
+        assert.notEqual(spec.scrollIntoView, true);
+        assert.equal(
+          view.state.selection.main.head,
+          changes.mapPos(cursorFrom),
+        );
+      });
+    }
+  }
+}
+
+test('scroll is captured after asynchronous formatting, using the latest viewport', async () => {
+  const { plugin, editor, snapshots } = setup();
+  const pending = plugin.format();
+  editor.cm.scrollDOM.scrollTop = 1234;
+  await pending;
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].scrollTop, 1234);
+});
+
+test('formatting remains available when an older editor lacks scroll snapshots', async () => {
+  const { plugin, editor } = setup();
+  editor.cm.scrollSnapshot = undefined;
+  await plugin.format();
+  assert.equal(editor.getValue(), '- root\n\t- child\n');
+});
+
+test('fractional anchor offsets are rounded to physical pixels', async () => {
+  const { plugin, editor, transactions } = setup();
+  editor.cm.dom.ownerDocument.defaultView.devicePixelRatio = 2;
+  editor.cm.lineBlockAtHeight = () => ({ from: 0, top: 26.375 });
+  await plugin.format();
+  const effects = transactions[0].effects;
+  assert.ok(effects, 'formatting must carry a scroll snapshot');
+  assert.equal(
+    (Array.isArray(effects) ? effects[0] : effects).value.yMargin,
+    -873.5,
+  );
+});
+
+test('pending widget measurements settle before capturing the viewport', async () => {
+  const { plugin, editor, snapshots, transactions } = setup();
+  const view = editor.cm;
+  // CodeMirror's measured read can adjust scrolling after widget layout changes.
+  view.lineBlockAtHeight = () => {
+    view.scrollDOM.scrollTop = 1000;
+    view.documentTop = -900;
+    return { from: 0, top: 100 };
+  };
+  await plugin.format();
+  assert.equal(snapshots[0].scrollTop, 1000);
+  assert.equal(transactions[0].effects.value.yMargin, -900);
+});
+
+for (const change of ['text', 'navigation']) {
+  test(`a ${change} change during layout measurement cancels formatting`, async () => {
+    const { plugin, editor, transactions, changeText } = setup();
+    editor.cm.lineBlockAtHeight = () => {
+      if (change === 'text') changeText('- newer user text');
+      else plugin.app.workspace.activeEditor = undefined;
+      return { from: 0, top: 0 };
+    };
+    await plugin.format();
+    assert.equal(transactions.length, 0);
+    if (change === 'text') assert.equal(editor.getValue(), '- newer user text');
+  });
+}
 
 test('typing while formatting never overwrites newer text', async () => {
   const { plugin, editor, changeText, transactions } = setup();

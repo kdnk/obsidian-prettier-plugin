@@ -18,6 +18,9 @@ importers:
         specifier: ^3.5.3
         version: 3.5.3
     devDependencies:
+      '@codemirror/state':
+        specifier: 6.5.2
+        version: 6.5.2
       '@codemirror/view':
         specifier: ^6.36.8
         version: 6.36.8
