@@ -8,3 +8,5 @@
     - Check code blocks and list membership with an independent Markdown parser, and YAML scalar values with a YAML parser. The formatter's own parser alone can miss semantic changes.
 - Releases
     - In GitButler workspaces, update `package.json`, `manifest.json`, and `versions.json` directly for version bumps; the `npm version` lifecycle script invokes `git add`.
+    - After installing through BRAT, reload BRAT and verify both the installed plugin version and repository tracking in saved settings and the UI.
+    - Compare installed JavaScript and CSS with release-asset checksums. Compare parsed manifest fields because BRAT may rewrite JSON whitespace during installation.
