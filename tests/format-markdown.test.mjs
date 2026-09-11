@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildSync } from 'esbuild';
-import * as markdown from 'prettier/plugins/markdown';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 
 const source = buildSync({
   entryPoints: ['src/format-markdown.ts'],
@@ -26,7 +26,7 @@ for (const input of [
         if (node.type === 'code') result.push(node.value);
         for (const child of node.children ?? []) visit(child);
       };
-      visit(await markdown.parsers.markdown.parse(text, {}));
+      visit(fromMarkdown(text));
       return result;
     };
     const actual = await formatMarkdown(input, options);
@@ -199,5 +199,82 @@ for (const [name, input, expected] of [
       expected,
       'second save is stable',
     );
+  });
+}
+
+// This parser is independent of Prettier's older Markdown parser. Using the
+// formatter's own AST as the oracle misses code that it already reads as prose.
+const codeInLists = (text) => {
+  const result = [];
+  const visit = (node, listDepth = 0) => {
+    if (node.type === 'code') result.push({ value: node.value, listDepth });
+    for (const child of node.children ?? [])
+      visit(child, listDepth + (node.type === 'listItem' ? 1 : 0));
+  };
+  visit(fromMarkdown(text));
+  return result;
+};
+for (const useTabs of [false, true]) {
+  for (const tabWidth of [2, 4]) {
+    test(`ordered indented code keeps its value and list owner (${useTabs}, ${tabWidth})`, async () => {
+      const input =
+        '1. root\n\n       const a = 1;\n       const b = 2;\n\n2. next\n';
+      const expected = [{ value: 'const a = 1;\nconst b = 2;', listDepth: 1 }];
+      assert.deepEqual(codeInLists(input), expected);
+      let output = input;
+      for (let pass = 0; pass < 3; pass++) {
+        output = await formatMarkdown(output, { useTabs, tabWidth });
+        assert.deepEqual(codeInLists(output), expected);
+      }
+      assert.equal(await formatMarkdown(output, { useTabs, tabWidth }), output);
+    });
+  }
+}
+
+test('protect ambiguous ordered code while formatting surrounding blocks', async () => {
+  const code = '1. root\n\n       literal <!-- keep -->\n\n2. next';
+  const input = `#   Heading\n\n${code}\n\n| a | longer |\n| - | - |\n| x | y |\n`;
+  const output = await formatMarkdown(input, options);
+  assert.deepEqual(codeInLists(output), [
+    { value: 'literal <!-- keep -->', listDepth: 1 },
+  ]);
+  assert.match(output, /^# Heading\n/);
+  assert.match(output, /\| a   \| longer \|/);
+  assert.equal(await formatMarkdown(output, options), output);
+  assert.ok(!output.includes('OBSIDIAN_PRETTIER_COMMENT'));
+});
+
+for (const input of [
+  '---\na: |\n    first\n\n    second\n---\n',
+  '---\na: |+\n    first\n\n\n---\n',
+  '1. root\n\n       a\n\n2. next\n\n# Heading\n\n1. root\n\n       b\n',
+]) {
+  test(`code protection preserves adjacent source blocks: ${JSON.stringify(input)}`, async () => {
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, input);
+    assert.equal(await formatMarkdown(output, options), input);
+  });
+}
+
+for (const indent of [1, 2, 3]) {
+  test(`protected list keeps its ${indent}-space outer indentation`, async () => {
+    const prefix = ' '.repeat(indent);
+    const input = `${prefix}1. root\n\n${prefix}       a\n\n${prefix}2. next\n`;
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, input);
+    assert.deepEqual(codeInLists(output), [{ value: 'a', listDepth: 1 }]);
+    assert.equal(await formatMarkdown(output, options), output);
+  });
+}
+
+for (const input of [
+  ' 123. item\n\n     a\n     b\n\n 123. next\n',
+  '1. root\n123. item\n\n    a\n    b\n\n123. next\n',
+]) {
+  test(`ambiguous standalone code keeps its surrounding list context: ${JSON.stringify(input)}`, async () => {
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, input);
+    assert.deepEqual(codeInLists(output), codeInLists(input));
+    assert.equal(await formatMarkdown(output, options), output);
   });
 }

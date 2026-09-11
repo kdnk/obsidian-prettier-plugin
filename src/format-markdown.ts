@@ -1,3 +1,4 @@
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import * as markdownPlugin from 'prettier/plugins/markdown';
 import * as prettier from 'prettier/standalone';
 
@@ -8,17 +9,14 @@ export interface MarkdownOptions {
 
 interface MarkdownNode {
   type: string;
+  ordered?: boolean;
+  value?: string;
   children?: MarkdownNode[];
   position?: {
     start: { line: number; offset: number };
     end: { line: number; offset: number };
   };
 }
-
-// The standalone Markdown parser does not consume formatter options.
-const parseMarkdown = markdownPlugin.parsers.markdown.parse as (
-  text: string,
-) => MarkdownNode | Promise<MarkdownNode>;
 
 // Markdown uses four-column tab stops, independently of the editor's display width.
 const columns = (prefix: string): number => {
@@ -43,6 +41,94 @@ const makePrefix = (width: number, tabs: boolean): string => {
   const tabCount = tabs ? Math.floor(width / 4) : 0;
   return '\t'.repeat(tabCount) + ' '.repeat(width - tabCount * 4);
 };
+// The standalone Markdown parser does not consume formatter options.
+const parseMarkdown = markdownPlugin.parsers.markdown.parse as (
+  text: string,
+) => MarkdownNode | Promise<MarkdownNode>;
+
+const codeSignature = (node: MarkdownNode): string =>
+  JSON.stringify([
+    node.position?.start.line,
+    node.position?.end.line,
+    node.value,
+  ]);
+
+// Prettier's Markdown parser can read valid indented code in ordered lists as
+// prose. Preserve the containing block before either indentation normalization
+// or Prettier can remove the columns that make it code.
+const unsafeCodeBlocks = async (
+  text: string,
+): Promise<NonNullable<MarkdownNode['position']>[]> => {
+  const recognized = new Set<string>();
+  const collect = (node: MarkdownNode) => {
+    if (node.type === 'code') recognized.add(codeSignature(node));
+    for (const child of node.children ?? []) collect(child);
+  };
+  const prettierTree = await parseMarkdown(text);
+  collect(prettierTree);
+  const hasUnsafeCode = (node: MarkdownNode, ordered = false): boolean => {
+    const insideOrdered = ordered || (node.type === 'list' && !!node.ordered);
+    // Normalizing a list's outer indentation can also make recognized code
+    // ambiguous to Prettier. Protect indented ordered-list code beforehand.
+    const indentedOrderedCode =
+      insideOrdered &&
+      node.position &&
+      columns(getPrefix(text.slice(node.position.start.offset))) >= 4;
+    return (
+      (node.type === 'code' &&
+        (indentedOrderedCode || !recognized.has(codeSignature(node)))) ||
+      (node.children ?? []).some((child) => hasUnsafeCode(child, insideOrdered))
+    );
+  };
+  const commonmarkBlocks = fromMarkdown(text).children as MarkdownNode[];
+  const blocks = [...commonmarkBlocks, ...(prettierTree.children ?? [])];
+  const ranges = commonmarkBlocks.flatMap((node, index) => {
+    if (!node.position || !hasUnsafeCode(node)) return [];
+    const previous = commonmarkBlocks[index - 1];
+    // Renumbering a preceding list can shorten its continuation indentation
+    // enough to absorb a standalone indented code block as list content.
+    const start =
+      node.type === 'code' && previous?.type === 'list'
+        ? previous.position?.start
+        : undefined;
+    return [{ ...node.position, start: start ?? node.position.start }];
+  });
+  // A parser disagreement can cross block boundaries: code that CommonMark
+  // places between lists may be part of one list to Prettier. Preserve that
+  // entire source context so formatting its neighbor cannot absorb the code.
+  for (const range of ranges) {
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const { position } of blocks) {
+        if (
+          position &&
+          position.start.offset < range.end.offset &&
+          range.start.offset < position.end.offset
+        ) {
+          if (position.start.offset < range.start.offset) {
+            range.start = position.start;
+            expanded = true;
+          }
+          if (position.end.offset > range.end.offset) {
+            range.end = position.end;
+            expanded = true;
+          }
+        }
+      }
+    }
+  }
+  ranges.sort((left, right) => left.start.offset - right.start.offset);
+  const merged: typeof ranges = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous && range.start.offset <= previous.end.offset) {
+      if (range.end.offset > previous.end.offset) previous.end = range.end;
+    } else merged.push(range);
+  }
+  return merged;
+};
+
 interface Fence {
   character: string;
   length: number;
@@ -197,14 +283,24 @@ export const formatMarkdown = async (
   while (input.includes(token)) token += '_';
   // ES2020 library target: the global regex provides replaceAll semantics.
   // eslint-disable-next-line unicorn/prefer-string-replace-all
-  const masked = input.replace(
-    /<!--[\s\S]*?-->/gu,
-    (comment, offset: number) => {
-      const line = input.slice(input.lastIndexOf('\n', offset - 1) + 1, offset);
-      comments.push({ prefix: getPrefix(line), text: comment });
-      return `<!--${token}${comments.length - 1}-->`;
-    },
-  );
+  let masked = input.replace(/<!--[\s\S]*?-->/gu, (comment, offset: number) => {
+    const line = input.slice(input.lastIndexOf('\n', offset - 1) + 1, offset);
+    comments.push({ prefix: getPrefix(line), text: comment });
+    return `<!--${token}${comments.length - 1}-->`;
+  });
+  const protectedBlocks = await unsafeCodeBlocks(masked);
+  for (const { start, end } of protectedBlocks.reverse()) {
+    comments.push({
+      prefix: getPrefix(
+        masked.slice(
+          masked.lastIndexOf('\n', start.offset - 1) + 1,
+          start.offset,
+        ),
+      ),
+      text: masked.slice(start.offset, end.offset),
+    });
+    masked = `${masked.slice(0, start.offset)}<!--${token}${comments.length - 1}-->${masked.slice(end.offset)}`;
+  }
   const unit = options.useTabs ? 4 : Math.max(2, options.tabWidth);
   // Repair before identifying inline code: deeply indented fences may initially
   // be parsed as inline backticks instead of fenced code blocks.

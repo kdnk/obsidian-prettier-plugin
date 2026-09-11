@@ -3,5 +3,8 @@
     - Preserve the completion Promise returned by `format()` so integrations can finish Prettier formatting before running the next formatter.
 - Scroll verification
     - Test repeated formatting and the calling plugin's save pipeline with properties and block widgets expanded and collapsed, including an offscreen cursor. Measure visible content coordinates as well as `scrollTop`.
+- Integration verification
+    - Exercise the actual Automatic Linker, Prettier, and Linter implementations with the enabled Linter rules. Inspect intermediate edits across repeated passes; identical final text can hide changes that the next formatter undoes.
+    - Check code blocks and list membership with an independent Markdown parser, and YAML scalar values with a YAML parser. The formatter's own parser alone can miss semantic changes.
 - Releases
     - In GitButler workspaces, update `package.json`, `manifest.json`, and `versions.json` directly for version bumps; the `npm version` lifecycle script invokes `git add`.
