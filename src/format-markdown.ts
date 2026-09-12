@@ -53,6 +53,122 @@ const codeSignature = (node: MarkdownNode): string =>
     node.value,
   ]);
 
+const findClosingFence = (
+  lines: string[],
+  openerLine: number,
+  openerOffset: number,
+  delimiter: string,
+  contentIndent: number,
+): { line: number; offset: number } | undefined => {
+  const closerPattern = new RegExp(
+    `^([\\t ]*)${delimiter[0]}{${delimiter.length},}[\\t ]*$`,
+    'u',
+  );
+  let offset = openerOffset + lines[openerLine].length + 1;
+  for (let line = openerLine + 1; line < lines.length; line++) {
+    const text = lines[line].replace(/\r$/u, '');
+    const closer = closerPattern.exec(text);
+    const closerIndent = closer ? columns(closer[1]) : -1;
+    if (
+      closer &&
+      closerIndent >= contentIndent &&
+      closerIndent <= contentIndent + 3
+    )
+      return {
+        line,
+        offset: offset + text.length + (lines[line].endsWith('\r') ? 1 : 0),
+      };
+    if (text.trim() && columns(getPrefix(text)) < contentIndent)
+      return { line: line - 1, offset: offset - 1 };
+    offset += lines[line].length + 1;
+  }
+  const trailingNewline = lines.at(-1) === '';
+  return {
+    line: Math.max(openerLine, lines.length - (trailingNewline ? 2 : 1)),
+    offset: offset - 1 - (trailingNewline ? 1 : 0),
+  };
+};
+
+const shiftWhitespaceLines = (
+  lines: string[],
+  start: number,
+  end: number,
+  shift: number,
+) => {
+  for (let line = start; line < end; line++) {
+    if (lines[line] && !lines[line].trim()) {
+      const prefix = getPrefix(lines[line]);
+      const carriageReturn = lines[line].endsWith('\r') ? '\r' : '';
+      lines[line] =
+        shift < 0
+          ? removeColumns(prefix, -shift) + carriageReturn
+          : makePrefix(shift, false) + prefix + carriageReturn;
+    }
+  }
+};
+
+const fencedListItems = (
+  text: string,
+): NonNullable<MarkdownNode['position']>[] => {
+  const parsedFenceRanges: NonNullable<MarkdownNode['position']>[] = [];
+  const visit = (node: MarkdownNode) => {
+    if (
+      node.type === 'code' &&
+      node.position &&
+      /^[\t ]{0,3}(?:`{3,}|~{3,})/u.test(
+        text.slice(node.position.start.offset, node.position.end.offset),
+      )
+    ) {
+      parsedFenceRanges.push(node.position);
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(fromMarkdown(text) as MarkdownNode);
+
+  const ranges: NonNullable<MarkdownNode['position']>[] = [];
+  const lines = text.split('\n');
+  let lineOffset = 0;
+  for (let index = 0; index < lines.length; index++) {
+    let consumedThroughClosingLine = false;
+    const line = lines[index].replace(/\r$/u, '');
+    const opener =
+      /^([\t ]*(?:[-+*]|\d+[.)])[\t ]+)(`{3,}|~{3,})[^\r\n]*$/u.exec(line);
+    const invalidBacktickInfo =
+      opener?.[2][0] === '`' &&
+      line.slice(opener[1].length + opener[2].length).includes('`');
+    if (opener && !invalidBacktickInfo) {
+      const startOffset = lineOffset + opener[1].length;
+      // A list-looking line inside an already parsed standalone fence is code,
+      // not a structural list item.
+      const insideParsedFence = parsedFenceRanges.some(
+        ({ start, end }) =>
+          start.offset < startOffset && startOffset < end.offset,
+      );
+      if (!insideParsedFence) {
+        const delimiter = opener[2];
+        const closing = findClosingFence(
+          lines,
+          index,
+          lineOffset,
+          delimiter,
+          columns(opener[1]),
+        );
+        if (closing) {
+          ranges.push({
+            end: { line: closing.line + 1, offset: closing.offset },
+            start: { line: index + 1, offset: startOffset },
+          });
+          index = closing.line;
+          lineOffset = closing.offset + 1;
+          consumedThroughClosingLine = true;
+        }
+      }
+    }
+    if (!consumedThroughClosingLine) lineOffset += lines[index].length + 1;
+  }
+  return ranges;
+};
+
 // Prettier's Markdown parser can read valid indented code in ordered lists as
 // prose. Preserve the containing block before either indentation normalization
 // or Prettier can remove the columns that make it code.
@@ -187,6 +303,9 @@ const normalizeLists = async (
 ): Promise<string> => {
   const tree = await parseMarkdown(text);
   const lines = text.split('\n');
+  const fencedItemLines = new Set(
+    fencedListItems(text).map(({ start }) => start.line - 1),
+  );
   const lists: MarkdownNode[] = [];
   const protectedLines = new Set<number>();
   const itemLines = new Set<number>();
@@ -243,14 +362,18 @@ const normalizeLists = async (
       const line = lines[index];
       const prefix = getPrefix(line);
       const indent = columns(prefix);
-      const delimiter = /^(`{3,}|~{3,})(.*)$/u.exec(line.slice(prefix.length));
-      const insideFence = fence !== undefined;
-      fence = nextFence(fence, delimiter);
       const marker = /^(?:[-+*]|\d+[.)])(?:[\t ]+|$)/u.exec(
         line.slice(prefix.length),
       );
+      const delimiter = /^(`{3,}|~{3,})(.*)$/u.exec(
+        line.slice(prefix.length + (marker?.[0].length ?? 0)),
+      );
+      const insideFence = fence !== undefined;
+      fence = nextFence(fence, delimiter);
       const isItem =
-        itemLines.has(index) || (!insideFence && !protectedLines.has(index));
+        itemLines.has(index) ||
+        fencedItemLines.has(index) ||
+        (!insideFence && !protectedLines.has(index));
       const target = targetIndent(
         stack,
         indent,
@@ -288,6 +411,47 @@ export const formatMarkdown = async (
     comments.push({ prefix: getPrefix(line), text: comment });
     return `<!--${token}${comments.length - 1}-->`;
   });
+  // A skipped indentation level can make CommonMark classify a fenced list
+  // item as indented code. Repair its structural marker while the delimiter is
+  // still visible, then keep the complete fence opaque to Prettier.
+  const fencesBeforeRepair = fencedListItems(masked);
+  if (fencesBeforeRepair.length > 0) {
+    const originalLines = masked.split('\n');
+    masked = await normalizeLists(
+      masked,
+      options.useTabs ? 4 : Math.max(2, options.tabWidth),
+      false,
+    );
+    const repairedLines = masked.split('\n');
+    const repairedFences = fencedListItems(masked);
+    for (const [index, after] of repairedFences.entries()) {
+      const before = fencesBeforeRepair[index];
+      if (before) {
+        const shift =
+          columns(getPrefix(repairedLines[after.start.line - 1])) -
+          columns(getPrefix(originalLines[before.start.line - 1]));
+        shiftWhitespaceLines(
+          repairedLines,
+          after.start.line,
+          after.end.line - 1,
+          shift,
+        );
+      }
+    }
+    masked = repairedLines.join('\n');
+  }
+  for (const { start, end } of fencedListItems(masked).reverse()) {
+    comments.push({
+      prefix: getPrefix(
+        masked.slice(
+          masked.lastIndexOf('\n', start.offset - 1) + 1,
+          start.offset,
+        ),
+      ),
+      text: masked.slice(start.offset, end.offset),
+    });
+    masked = `${masked.slice(0, start.offset)}<!--${token}${comments.length - 1}-->${masked.slice(end.offset)}`;
+  }
   const protectedBlocks = await unsafeCodeBlocks(masked);
   for (const { start, end } of protectedBlocks.reverse()) {
     comments.push({

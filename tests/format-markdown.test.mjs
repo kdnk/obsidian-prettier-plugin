@@ -35,6 +35,85 @@ for (const input of [
   });
 }
 
+for (const [name, input] of [
+  [
+    'backtick fence used as a list item',
+    '- aaa\n\t- ```go\n\t  aaa  \n\t  \n\t  - literal list marker\n\t  ```\n-',
+  ],
+  [
+    'tilde fence containing a fence-looking code line',
+    '- parent\n\t- ~~~~go\n\t    additionally indented  \n\n\t  - literal list marker\n\t  ```js\n\t  ~~~~~\n\t- after\n- next',
+  ],
+  [
+    'fence with an over-indented delimiter-shaped code line',
+    '- parent\n\t- ~~~~\n\t  code\n\t      ~~~~\n\t  after\n\t  ~~~~',
+  ],
+]) {
+  test(`${name} preserves its exact fenced Markdown`, async () => {
+    const expected = `${input}\n`;
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, expected);
+    assert.deepEqual(codeInLists(output), codeInLists(input));
+    assert.equal(await formatMarkdown(output, options), expected);
+  });
+}
+
+test('repairs a skipped list depth without reprinting its fenced item', async () => {
+  const input =
+    '#   Heading\n\n- root\n      - ~~~~go\n        code  \n        \n        - literal\n        ~~~~~\n      - after\n\n| a | longer |\n| - | - |\n| x | y |';
+  const expected =
+    '# Heading\n\n- root\n\t- ~~~~go\n\t  code  \n\t  \n\t  - literal\n\t  ~~~~~\n\t- after\n\n| a   | longer |\n| --- | ------ |\n| x   | y      |\n';
+  const output = await formatMarkdown(input, options);
+  assert.equal(output, expected);
+  assert.deepEqual(codeInLists(output), codeInLists(expected));
+  assert.equal(await formatMarkdown(output, options), expected);
+});
+
+test('preserves an unclosed fenced item through skipped-depth repair', async () => {
+  const input =
+    '- root\n      - ~~~~go\n        code  \n        \n        - literal\n- next\n\n#   Heading';
+  const expected =
+    '- root\n\t- ~~~~go\n\t  code  \n\t  \n\t  - literal\n- next\n\n# Heading\n';
+  const output = await formatMarkdown(input, options);
+  assert.equal(output, expected);
+  assert.deepEqual(codeInLists(output), codeInLists(expected));
+  assert.equal(await formatMarkdown(output, options), expected);
+});
+
+for (const [name, input, expected] of [
+  [
+    'closed CRLF fence',
+    '- root\r\n      - ~~~~go\r\n        code  \r\n        \r\n        ~~~~~\r\n- next',
+    '- root\n\t- ~~~~go\r\n\t  code  \r\n\t  \r\n\t  ~~~~~\r\n- next\n',
+  ],
+  [
+    'unclosed CRLF fence before a dedent',
+    '- root\r\n      - ~~~~go\r\n        code  \r\n        \r\n        - literal\r\n- next',
+    '- root\n\t- ~~~~go\r\n\t  code  \r\n\t  \r\n\t  - literal\r\n- next\n',
+  ],
+]) {
+  test(`${name} preserves the fenced physical Markdown`, async () => {
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, expected);
+    assert.equal(await formatMarkdown(output, options), expected);
+  });
+}
+
+test('does not protect a backtick-like item with an invalid info string', async () => {
+  const input = '- ```foo`bar\n\n- parent\n    - child\n';
+  const output = await formatMarkdown(input, options);
+  assert.match(output, /\n\t- child\n/u);
+  assert.equal(await formatMarkdown(output, options), output);
+});
+
+test('continues to format a standalone fenced block', async () => {
+  const input = '~~~~js extra\ncode  \n~~~~\n';
+  assert.equal(
+    await formatMarkdown(input, options),
+    '```js extra\ncode\n```\n',
+  );
+});
+
 test('nested opaque blocks restore their comments', async () => {
   const input = 'text `multi\nline` <!-- keep me -->\n';
   assert.equal(await formatMarkdown(input, options), input);
