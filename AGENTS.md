@@ -6,6 +6,7 @@
 - Integration verification
     - Exercise the actual Automatic Linker, Prettier, and Linter implementations with the enabled Linter rules. Inspect intermediate edits across repeated passes; identical final text can hide changes that the next formatter undoes.
     - Check code blocks and list membership with an independent Markdown parser, and YAML scalar values with a YAML parser. The formatter's own parser alone can miss semantic changes.
+    - For parentless-list recovery, test marker-shaped continuation text, indented following paragraphs, and multiline comments; preserve their content and block boundaries across repeated passes.
 - Releases
     - In GitButler workspaces, update `package.json`, `manifest.json`, and `versions.json` directly for version bumps; the `npm version` lifecycle script invokes `git add`.
     - After installing through BRAT, reload BRAT and verify both the installed plugin version and repository tracking in saved settings and the UI.
