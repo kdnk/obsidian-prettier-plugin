@@ -29,7 +29,7 @@
   ],
   "license": "MIT",
   "main": "main.js",
-  "name": "obsidian-prettier-plugin",
+  "name": "obsidian-prettier",
   "prettier": {
     "singleQuote": true,
     "tabWidth": 2,
