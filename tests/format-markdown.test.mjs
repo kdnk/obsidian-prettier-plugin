@@ -178,6 +178,27 @@ for (const [name, input, expected] of [
   ],
   ['remainder spaces', '- root\n     - child', '- root\n\t- child\n'],
   [
+    'indented root list below a heading',
+    '## メモ\n\n    \t- helloe\n    \t\t- 今日の\n    \t\t\t- he\n    \t\t\t- 今日の予定は？\n',
+    '## メモ\n\n- helloe\n\t- 今日の\n\t\t- he\n\t\t- 今日の予定は？\n',
+  ],
+  ['single indented root', '\t- root\n', '- root\n'],
+  [
+    'indented root with skipped child levels',
+    '    - root\n            - child\n',
+    '- root\n\t- child\n',
+  ],
+  [
+    'indented roots and descendants',
+    '\t\t- root\n\t\t\t- child\n\t\t- sibling\n',
+    '- root\n\t- child\n- sibling\n',
+  ],
+  [
+    'indented ordered tasks',
+    '    1. [ ] root\n            1. [x] child\n    2. [ ] next\n',
+    '1. [ ] root\n\t1. [x] child\n2. [ ] next\n',
+  ],
+  [
     'task items',
     '- [ ] root\n        - [x] child',
     '- [ ] root\n\t- [x] child\n',
@@ -212,13 +233,74 @@ for (const [name, input, expected] of [
 
 for (const input of [
   '```md\n- root\n        - code\n```\n',
-  '    - root\n            - code\n',
+  '    - root\n            - code\n    console.log("keep code");\n',
   '<pre>\n\n- root\n        - html\n</pre>\n',
   '<!-- first --> <!--\n- root\n        - comment\n-->\n',
   '---\ntags:\n  - root\n  - child\n---\n',
 ]) {
   test(`protect non-list text: ${JSON.stringify(input)}`, async () => {
     assert.equal(await formatMarkdown(input, options), input);
+  });
+}
+
+test('recovering an indented root preserves list hierarchy in an independent parser', async () => {
+  const input =
+    '## メモ\n\n    \t- helloe\n    \t\t- 今日の\n    \t\t\t- he\n    \t\t\t- 今日の予定は？\n';
+  for (const useTabs of [false, true]) {
+    for (const tabWidth of [2, 4]) {
+      let output = input;
+      for (let pass = 0; pass < 3; pass++) {
+        output = await formatMarkdown(output, { useTabs, tabWidth });
+        const items = [];
+        const visit = (node, depth = 0) => {
+          assert.notEqual(node.type, 'code');
+          if (node.type === 'listItem') items.push(depth);
+          for (const child of node.children ?? [])
+            visit(child, depth + (node.type === 'listItem' ? 1 : 0));
+        };
+        visit(fromMarkdown(output));
+        assert.deepEqual(items, [0, 1, 2, 2]);
+      }
+      assert.equal(await formatMarkdown(output, { useTabs, tabWidth }), output);
+    }
+  }
+});
+
+for (const indent of [0, 1, 2, 3]) {
+  test(`root recovery keeps the following paragraph outside the list (${indent} spaces)`, async () => {
+    const input = `    - root\n${' '.repeat(indent)}Following paragraph.\n`;
+    const output = await formatMarkdown(input, options);
+    assert.equal(output, '- root\n\nFollowing paragraph.\n');
+    assert.deepEqual(
+      fromMarkdown(output).children.map(({ type }) => type),
+      ['list', 'paragraph'],
+    );
+    assert.equal(await formatMarkdown(output, options), output);
+  });
+}
+
+test('root recovery leaves multiline comment contents opaque', async () => {
+  const input = '<!-- first --> <!--\n    - root\n            - child\n-->\n';
+  assert.equal(await formatMarkdown(input, options), input);
+});
+
+for (const input of [
+  '```md\n    \t- root\n    \t\t- child\n```\n',
+  '>     - root\n>         - child\n',
+  '- owner\n\n      - literal\n          - nested literal\n',
+  '1. owner\n\n       - literal\n           - nested literal\n',
+  '    - root\n\n    ordinary code\n',
+  '    - root\n    - <!--\n    ordinary code\n    -->\n',
+  '    ---\n    - literal\n',
+  '    1. first\n            2. literal\n            2. last\n',
+  '    1. `first\n            2. literal\n            2. last`\n',
+  '    1. [first](url "title\n            2. literal\n            2. last")\n',
+  '---\nexample: |\n    - literal\n        - nested literal\n---\n',
+]) {
+  test(`root recovery preserves other code: ${JSON.stringify(input)}`, async () => {
+    const output = await formatMarkdown(input, options);
+    assert.deepEqual(codeInLists(output), codeInLists(input));
+    assert.equal(await formatMarkdown(output, options), output);
   });
 }
 

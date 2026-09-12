@@ -22,11 +22,11 @@ This plugin has no format-on-save option or save hook. Its settings tab only dis
 
 # Customization
 
-This fork repairs skipped indentation levels before running Prettier, then converts list hierarchy indentation to the current Obsidian Editor setting. With tabs enabled, an eight-space child directly below a root becomes a one-tab child. Existing intermediate ancestors are retained, and descendants and continuation lines move with their owning item.
+This fork repairs skipped indentation levels before running Prettier, recovers parentless lists after surrounding paragraphs are formatted, then converts list hierarchy indentation to the current Obsidian Editor setting. With tabs enabled, an eight-space child directly below a root becomes a one-tab child. Existing intermediate ancestors are retained, and descendants and continuation lines move with their owning item.
 
 Prettier itself prints Markdown lists with spaces even with `useTabs: true`; this fork performs the final conversion. Markdown tab stops are four columns regardless of the editor's visual tab width. Spaces mode uses the configured width (minimum two). Wide ordered-list markers can require more than one tab to keep children nested.
 
-Only structural list indentation is normalized. Marker separators and alignment spaces remain where Markdown needs them; code-content spaces and tabs are preserved. Quoted lists are left to Prettier. Indented runs recognized as code are not guessed to be malformed lists. Blocks containing multiline inline code, links, images or reference definitions are kept out of Prettier's formatting pass to avoid upstream preservation issues. Embedded code formatting is disabled.
+Only structural list indentation is normalized. Marker separators and alignment spaces remain where Markdown needs them; code-content spaces and tabs are preserved. Quoted lists are left to Prettier. Standalone indented blocks whose nonblank lines are all list items are treated as parentless lists: the first item moves to the left margin and relative nesting is repaired. Wrap literal list examples in code fences to retain their indentation. Indented blocks containing ordinary code or prose, and code nested in lists, remain protected. Blocks containing multiline inline code, links, images or reference definitions are kept out of Prettier's formatting pass to avoid upstream preservation issues. Embedded code formatting is disabled.
 
 One formatting operation applies one atomic diff and does nothing when the result is unchanged. Formatting is discarded if the text or active file/editor changes while it is running. Indentation is read from Obsidian's current `useTab` and `tabSize` settings; legacy saved plugin options are ignored.
 

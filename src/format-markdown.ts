@@ -296,6 +296,82 @@ const targetIndent = (
     : indent;
 };
 
+const recoverListBlock = (block: string, unit: number): string | undefined => {
+  if (columns(getPrefix(block)) < 4) return undefined;
+  const lines = block.split('\n');
+  const markers = lines.map((line) =>
+    /^(?:[-+*]|\d+[.)])(?:[\t ]+|$)/u.exec(line.trimStart()),
+  );
+  if (lines.some((line, index) => line.trim() && !markers[index]))
+    return undefined;
+  const stack: IndentItem[] = [];
+  const recovered = lines
+    .map((line, index) => {
+      if (!line.trim()) return line;
+      const prefix = getPrefix(line);
+      const target = targetIndent(
+        stack,
+        columns(prefix),
+        markers[index]?.[0],
+        unit,
+        true,
+      );
+      return makePrefix(target, false) + line.slice(prefix.length);
+    })
+    .join('\n');
+  // Marker-shaped text can still be a thematic break or an invalid list.
+  const tree = fromMarkdown(recovered) as MarkdownNode;
+  if (!tree.children?.every(({ type }) => type === 'list')) return undefined;
+  const itemLines = new Set<number>();
+  const visit = (node: MarkdownNode) => {
+    if (node.type === 'listItem' && node.position)
+      itemLines.add(node.position.start.line - 1);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tree);
+  // Ordered markers and multiline inline content can parse as continuation
+  // text. Do not flatten those lines by guessing that each is a child item.
+  return lines.every((line, index) => !line.trim() || itemLines.has(index))
+    ? recovered
+    : undefined;
+};
+
+// A parentless, indented run made entirely of list items is a common editing
+// mistake in Obsidian. Recover only standalone blocks that both parsers call
+// code; nested code, frontmatter, fences and mixed code/prose stay protected.
+const recoverIndentedLists = async (
+  text: string,
+  unit: number,
+  protectedToken: string,
+): Promise<string> => {
+  const tree = await parseMarkdown(text);
+  const commonmarkBlocks = fromMarkdown(text).children as MarkdownNode[];
+  const standaloneCode = new Set(
+    commonmarkBlocks
+      .filter((node) => node.type === 'code')
+      .map((node) => codeSignature(node)),
+  );
+  let result = text;
+  for (const node of [...(tree.children ?? [])].reverse()) {
+    if (
+      node.type === 'code' &&
+      node.position &&
+      !node.value?.includes(protectedToken) &&
+      standaloneCode.has(codeSignature(node))
+    ) {
+      const { start, end } = node.position;
+      const recovered = recoverListBlock(
+        text.slice(start.offset, end.offset),
+        unit,
+      );
+      if (recovered !== undefined)
+        // A following paragraph must not become a lazy list continuation.
+        result = `${result.slice(0, start.offset)}${recovered}\n${result.slice(end.offset)}`;
+    }
+  }
+  return result;
+};
+
 const normalizeLists = async (
   text: string,
   unit: number,
@@ -395,10 +471,23 @@ const normalizeLists = async (
   return lines.join('\n');
 };
 
+const formatWithPrettier = (text: string) =>
+  prettier.format(text, {
+    embeddedLanguageFormatting: 'off',
+    parser: 'markdown',
+    plugins: [markdownPlugin],
+    // Prettier's Markdown printer adds content indentation using tabWidth even
+    // though an unordered marker occupies two columns. Its canonical width of
+    // two preserves nested code content; the final pass sets hierarchy width.
+    tabWidth: 2,
+    useTabs: false,
+  });
+
 export const formatMarkdown = async (
   input: string,
   options: MarkdownOptions,
 ): Promise<string> => {
+  const unit = options.useTabs ? 4 : Math.max(2, options.tabWidth);
   // Keep multi-line comments opaque even where the Markdown parser treats a
   // second comment on the same line as paragraph text.
   const comments: { text: string; prefix: string }[] = [];
@@ -465,7 +554,6 @@ export const formatMarkdown = async (
     });
     masked = `${masked.slice(0, start.offset)}<!--${token}${comments.length - 1}-->${masked.slice(end.offset)}`;
   }
-  const unit = options.useTabs ? 4 : Math.max(2, options.tabWidth);
   // Repair before identifying inline code: deeply indented fences may initially
   // be parsed as inline backticks instead of fenced code blocks.
   const text = await normalizeLists(masked, unit, false);
@@ -487,17 +575,15 @@ export const formatMarkdown = async (
       )}<!--${token}${comments.length - 1}-->${safeText.slice(end.offset)}`;
     }
   }
-  const formatted = await prettier.format(safeText, {
-    embeddedLanguageFormatting: 'off',
-    parser: 'markdown',
-    plugins: [markdownPlugin],
-    // Prettier's Markdown printer adds content indentation using tabWidth even
-    // though an unordered marker occupies two columns. Its canonical width of
-    // two preserves nested code content; the final pass sets hierarchy width.
-    tabWidth: 2,
-    useTabs: false,
-  });
-  let result = await normalizeLists(formatted, unit, options.useTabs);
+  // Format surrounding paragraphs first so their optional indentation cannot
+  // become list continuation indentation when a neighboring code block recovers.
+  const formatted = await formatWithPrettier(safeText);
+  const recovered = await recoverIndentedLists(formatted, unit, token);
+  let result = await normalizeLists(
+    recovered === formatted ? formatted : await formatWithPrettier(recovered),
+    unit,
+    options.useTabs,
+  );
   // Expand outer placeholders first, then inner comments. Move each comment's
   // continuation lines with its first line, retaining relative code whitespace.
   for (let index = comments.length - 1; index >= 0; index--) {

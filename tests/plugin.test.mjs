@@ -109,6 +109,21 @@ test('format uses repaired tabs and one atomic editor transaction', async () => 
   );
 });
 
+test('format repairs an indented root through the awaitable plugin API', async () => {
+  const { plugin, editor, transactions, changeText } = setup();
+  changeText(
+    '## メモ\n\n    \t- helloe\n    \t\t- 今日の\n    \t\t\t- he\n    \t\t\t- 今日の予定は？\n',
+  );
+  await plugin.format();
+  assert.equal(
+    editor.getValue(),
+    '## メモ\n\n- helloe\n\t- 今日の\n\t\t- he\n\t\t- 今日の予定は？\n',
+  );
+  assert.equal(transactions.length, 1);
+  await plugin.format();
+  assert.equal(transactions.length, 1);
+});
+
 // DOM geometry is supplied here; effect creation and change/selection mapping
 // use real CodeMirror. Live Obsidian tests cover widget layout and rendering.
 for (const propertiesHeight of [0, 673]) {
